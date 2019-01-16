@@ -27,6 +27,8 @@ namespace Mabioned
 		/// <param name="e"></param>
 		private void FrmSettings_Load(object sender, EventArgs e)
 		{
+			this.ChkSingleInstance.Checked = Settings.Default.SingleInstance;
+
 			this.LblBackgroundColor.BackColor = Settings.Default.BackgroundColor;
 			this.LblPropsColor.BackColor = Settings.Default.PropsColor;
 			this.LblEventsColor.BackColor = Settings.Default.EventsColor;
@@ -43,14 +45,18 @@ namespace Mabioned
 		/// <param name="e"></param>
 		private void BtnOK_Click(object sender, EventArgs e)
 		{
+			Settings.Default.SingleInstance = this.ChkSingleInstance.Checked;
+
 			Settings.Default.BackgroundColor = this.LblBackgroundColor.BackColor;
 			Settings.Default.PropsColor = this.LblPropsColor.BackColor;
 			Settings.Default.EventsColor = this.LblEventsColor.BackColor;
 			Settings.Default.AreasColor = this.LblAreasColor.BackColor;
 			Settings.Default.SelectionColor = this.LblSelectionColor.BackColor;
 
-			if (this.IsDataFolder(this.TxtDataFolder.Text))
-				Settings.Default.DataFolder = this.TxtDataFolder.Text;
+			if (!this.IsDataFolder(this.TxtDataFolder.Text))
+				MessageBox.Show("No prop data found in the selected data folder, make sure to select a complete data folder that contains the db and world folders.", "", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+			Settings.Default.DataFolder = this.TxtDataFolder.Text;
 
 			this.DialogResult = DialogResult.OK;
 			this.Close();

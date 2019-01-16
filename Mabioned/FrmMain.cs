@@ -5,7 +5,9 @@ using System.Drawing;
 using System.Drawing.Design;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Windows.Forms;
+using System.Xml.Serialization;
 using MabiWorld;
 using MabiWorld.Data;
 using MabiWorld.PropertyEditing;
@@ -90,7 +92,7 @@ namespace Mabioned
 		/// </summary>
 		public FrmMain()
 		{
-			InitializeComponent();
+			this.InitializeComponent();
 
 			NotifyingCollectionEditor.CollectionChanged += this.OnCollectionChanged;
 			NotifyingCollectionEditor.CollectionPropertyChanged += this.OnCollectionPropertyChanged;
@@ -104,8 +106,6 @@ namespace Mabioned
 		/// <param name="e"></param>
 		private void FrmMain_Load(object sender, EventArgs e)
 		{
-			Settings.Default.Load();
-
 			this.ToolStrip.Renderer = new ToolStripRendererNL();
 
 			this.LoadViewOptions();
@@ -174,6 +174,25 @@ namespace Mabioned
 		/// <param name="e"></param>
 		private void FrmMain_FormClosing(object sender, FormClosingEventArgs e)
 		{
+			if (this.IsFileOpen && this.IsFileModified)
+			{
+				var result = MessageBox.Show(this, "There are unsaved modifications, do you want to save before closing?", Title, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+				if (result == DialogResult.Cancel)
+				{
+					e.Cancel = true;
+					return;
+				}
+
+				if (result == DialogResult.Yes)
+				{
+					if (!this.SaveFile(_openFilePath))
+					{
+						e.Cancel = true;
+						return;
+					}
+				}
+			}
+
 			this.SaveSettings();
 		}
 
@@ -1414,6 +1433,27 @@ namespace Mabioned
 					if (entity.Tag is CanvasObject obj)
 						obj.Rotate(diff);
 				}
+				else if (propertyName == "Scale")
+				{
+					var oldValue = (float)e.OldValue;
+					var newValue = (float)e.ChangedItem.Value;
+					var multiplier = (1.0 / oldValue * newValue);
+
+					foreach (var shape in entity.Shapes)
+					{
+						var lenX = shape.LenX;
+						var lenY = shape.LenX;
+
+						lenX = lenX / oldValue * newValue;
+						lenY = lenY / oldValue * newValue;
+
+						shape.LenX = lenX;
+						shape.LenY = lenY;
+					}
+
+					if (entity.Tag is CanvasObject obj)
+						obj.Resize(multiplier);
+				}
 			}
 			else if (this.PropertyGrid.SelectedObject is MabiWorld.Region region)
 			{
@@ -1798,7 +1838,28 @@ namespace Mabioned
 				return;
 			}
 
-			_copyEntity = _selectedEntity;
+			if (_selectedEntity is Prop prop)
+			{
+				prop = prop.Copy();
+
+				using (var ms = new MemoryStream())
+				using (var bw = new BinaryWriter(ms))
+				{
+					prop.WriteTo(bw);
+					Clipboard.SetData("MabionedProp", ms.ToArray());
+				}
+			}
+			else if (_selectedEntity is Event evnt)
+			{
+				evnt = evnt.Copy();
+
+				using (var ms = new MemoryStream())
+				using (var bw = new BinaryWriter(ms))
+				{
+					evnt.WriteTo(bw);
+					Clipboard.SetData("MabionedEvent", ms.ToArray());
+				}
+			}
 		}
 
 		/// <summary>
@@ -1806,10 +1867,26 @@ namespace Mabioned
 		/// </summary>
 		private void PasteSelectedEntity()
 		{
-			if (_copyEntity == null)
+			IEntity entity = null;
+
+			if (Clipboard.ContainsData("MabionedProp"))
+			{
+				var data = (byte[])Clipboard.GetData("MabionedProp");
+				using (var ms = new MemoryStream(data))
+				using (var br = new BinaryReader(ms))
+					entity = Prop.ReadFrom(null, br);
+			}
+			else if (Clipboard.ContainsData("MabionedEvent"))
+			{
+				var data = (byte[])Clipboard.GetData("MabionedEvent");
+				using (var ms = new MemoryStream(data))
+				using (var br = new BinaryReader(ms))
+					entity = Event.ReadFrom(null, br);
+			}
+
+			if (entity == null)
 				return;
 
-			var entity = _copyEntity;
 			var mousePosition = this.RegionCanvas.PointToClient(MousePosition);
 
 			// Check if canvas has the focus
@@ -1824,42 +1901,42 @@ namespace Mabioned
 			switch (entity)
 			{
 				case Prop prop:
+				{
+					var copy = prop.Copy();
+					copy.MoveTo(pos);
+
+					try
 					{
-						var copy = prop.Copy();
-						copy.MoveTo(pos);
-
-						try
-						{
-							this.AddProp(copy);
-						}
-						catch (NoEntityIdException)
-						{
-							MessageBox.Show("Failed to acquire a new prop entity id.", Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
-							return;
-						}
-
-						this.SetModified(true);
+						this.AddProp(copy);
 					}
-					break;
+					catch (NoEntityIdException)
+					{
+						MessageBox.Show("Failed to acquire a new prop entity id.", Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+						return;
+					}
+
+					this.SetModified(true);
+				}
+				break;
 
 				case Event evnt:
+				{
+					var copy = evnt.Copy();
+					copy.MoveTo(pos);
+
+					try
 					{
-						var copy = evnt.Copy();
-						copy.MoveTo(pos);
-
-						try
-						{
-							this.AddEvent(copy);
-						}
-						catch (NoEntityIdException)
-						{
-							MessageBox.Show("Failed to acquire a new event entity id.", Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
-							return;
-						}
-
-						this.SetModified(true);
+						this.AddEvent(copy);
 					}
-					break;
+					catch (NoEntityIdException)
+					{
+						MessageBox.Show("Failed to acquire a new event entity id.", Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+						return;
+					}
+
+					this.SetModified(true);
+				}
+				break;
 			}
 		}
 
@@ -2479,14 +2556,31 @@ namespace Mabioned
 		/// <param name="e"></param>
 		private void MnuMapRemoveSimilarProps_Click(object sender, EventArgs e)
 		{
-			// Get info about selected prop
-			if (this._selectedEntity == null) return;
-			if (!(this._selectedEntity is Prop prop)) return;
-
-			// Open form to remove all props, prefilled by ID
-			var form = new FrmFilterProps(prop);
-			if (form.ShowDialog() != DialogResult.OK)
+			if (_selectedEntity == null || !(_selectedEntity is Prop prop))
 				return;
+
+			// Open form to filter props, prefilled with information to
+			// find similar props.
+			var filter = new FrmFilterProps(prop);
+			if (filter.ShowDialog() != DialogResult.OK)
+				return;
+
+			// Find and remove props from area, tree, and canvas.
+			this.RegionCanvas.BeginUpdate();
+			this.TreeRegion.BeginUpdate();
+			for (var i = 0; i < _areas.Count; ++i)
+			{
+				var area = _areas[i];
+
+				this.RemoveProps(area.Props, filter);
+				this.UpdateAreaNode(area);
+			}
+			this.TreeRegion.EndUpdate();
+			this.RegionCanvas.EndUpdate();
+
+			this.TreeRegion.SelectedNode = this.TreeRegion.Nodes[0];
+
+			this.SetModified(true);
 		}
 	}
 }
